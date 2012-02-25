@@ -103,6 +103,10 @@ meta::define_form 'alias', sub {
   };
 };
 __
+meta::meta('type::binary', <<'__');
+meta::functor::editable 'binary', extension => '.binary', default => 'edit', inherit => 0;
+
+__
 meta::meta('type::bootstrap', <<'__');
 # Bootstrap attributes don't get executed. The reason for this is that because
 # they are serialized directly into the header of the file (and later duplicated
@@ -227,6 +231,11 @@ meta::meta('type::state', <<'__');
 meta::configure 'state', inherit => 0, extension => '.pl';
 meta::define_form 'state', \&meta::bootstrap::implementation;
 __
+meta::meta('type::vim_highlighter', <<'__');
+meta::configure 'vim_highlighter', extension => '.vim', inherit => 1;
+meta::define_form 'vim_highlighter', \&meta::bootstrap::implementation;
+
+__
 meta::bootstrap('html', <<'__');
 <html>
   <head>
@@ -315,6 +324,8 @@ __
 meta::cache('parent-identification', <<'__');
 /home/spencertipping/bin/object 99aeabc9ec7fe80b1b39f5e53dc7e49e
 /home/spencertipping/conjectures/perl-objects/sdoc a1e8480e579614c01dabeecf0f963bcc
+binary 93194ecf50e38f2adb6e273909e007b5
+vim-highlighters 902333a0bd6ed90ff919fe8477cb4e69
 __
 meta::data('author', <<'__');
 Spencer Tipping <spencer@spencertipping.com>
@@ -376,6 +387,22 @@ for (grep length, @_) {
       rm('data::permanent-identity');
       file::write($_, serialize(), noclobber => 1);
       chmod(0700, $_)})})}
+__
+meta::function('compile-binary', <<'__');
+# Compiles binary-text to binary output.
+my $text = join '', map split(/\s+/), split /#.*/m, retrieve($_[0]);
+my $hex_letters = '0123456789abcdef';
+
+my $next       = 1;
+my $repeat     = sub {$next = $_[0]; ''};                       # Repeaters have no output
+my $repetition = sub {my $count = $next; $next = 1; $count};
+my $binary     = sub {my $total = 0; $total = ($total << 1) + substr($_[0], $_, 1)                      for 0 .. 7; chr($total) x &$repetition()};
+my $hex        = sub {my $total = 0; $total = ($total << 4) + index($hex_letters, substr($_[0], $_, 1)) for 0 .. 1; chr($total) x &$repetition()};
+
+my @tokens = split m!(-[01]{8}|[0-9a-f]{2}|/\d+/)!, $text;
+my @output = map /^-([01]{8})/ ? &$binary($1) : /^\/(\d+)\// ? &$repeat($1) : /^[0-9a-f]{2}/ ? &$hex($_) : '', @tokens;
+join '', @output;
+
 __
 meta::function('cp', <<'__');
 my $from = shift @_;
@@ -537,8 +564,10 @@ else    {pop @{$transient{path}}}
 __
 meta::function('reload', 'around_hook(\'reload\', sub {execute($_) for grep ! /^bootstrap::/, keys %data});');
 meta::function('render', <<'__');
+terminal::info('rendering');
 file::write('README.md', retrieve('markdown::readme'));
-file::write("$_.md", retrieve("markdown::$_"), mkpath => 1) for grep s+^sdoc::doc++, sort keys %data;
+file::write("doc/$_.md", retrieve("markdown::doc/$_"), mkpath => 1) for grep s+^sdoc::doc/++,        sort keys %data;
+file::write("bin/$_", retireve("bin::$_"), mkpath => 1)             for grep s+^(sdoc::)?binary::++, sort keys %data;
 
 __
 meta::function('rm', <<'__');
@@ -697,8 +726,8 @@ my @markup;
 my $indent        = sub {'  ' x ($_[0] || $section_level)};
 my $unindent      = sub {my $spaces = '  ' x ($section_level - 1); s/^$spaces//gm};
 
-my $code          = sub {&$unindent(); s/^c\n//;                   push @markup, "\n", join "\n", map &$indent(2) . $_, split /\n/, $_};
-my $quoted        = sub {&$unindent(); s/^\|(\s?)/ \1/; s/^  //mg; push @markup, "\n", join "\n", map &$indent(2) . $_, split /\n/, $_};
+my $code          = sub {&$unindent(); s/^c\n//;                   push @markup, "\n", join("\n", map &$indent(2) . $_, split /\n/, $_), "\n"};
+my $quoted        = sub {&$unindent(); s/^\|(\s?)/ \1/; s/^  //mg; push @markup, "\n", join("\n", map &$indent(2) . $_, split /\n/, $_), "\n"};
 
 my $heading       = sub {'#' x $_[0]};
 my $section       = sub {&$unindent(); push @markup, "\n" . &$heading($_[0]) . ' ' . $2};
@@ -869,6 +898,14 @@ unlink $other if my $result = $observed eq (my $state = state());
 terminal::error("Verification failed; expected $state but got $observed from $other") unless $result;
 hook('after-verify', $result, observed => $observed, expected => $state);
 $result;
+__
+meta::function('vim', <<'__');
+# Installs VIM highlighters.
+file::write("$ENV{'HOME'}/.vim/syntax/$_.vim", retrieve("vim_highlighter::$_")) for grep s/^vim_highlighter:://o, keys %data;
+__
+meta::hook('after-shell::render', <<'__');
+render();
+
 __
 meta::hook('before-shell::ad', <<'__');
 ad('sdoc::');
@@ -1366,7 +1403,7 @@ __
 meta::parent('/home/spencertipping/conjectures/perl-objects/sdoc', <<'__');
 function::sdoc                           f3f3f3127961399a4c38152771c966ab
 function::sdoc-html                      b23152b3f5be696e5bae842ec43fc5a4
-function::sdoc-markdown                  8e7efa8f5724bcaf7435d4056d7bfb18
+function::sdoc-markdown                  95b79c4f54d9f8d77e67b557cd951c7e
 function::sdocp                          c3d738d982ba87418a298ff58478a85b
 meta::type::sdoc                         22cd7315641d38c9d536344e83c36bed
 meta::type::slibrary                     95474943c4a5f8ff17d3cf66ddb7c386
@@ -1375,6 +1412,147 @@ retriever::html-sdoc                     2a5d5aa45e2d7576f79e045177d8705c
 retriever::markdown-sdoc                 20651301fffb3c018da926ede531f84c
 retriever::sdoc                          662061e9e41491e2a1debd6862ccf1e7
 retriever::sdocp                         330694ea14a23bb04b65c761075cd946
+
+__
+meta::parent('binary', <<'__');
+function::compile-binary                 051591976db1e9ef71a02a7747ca6b0f
+meta::type::binary                       3a80e9982dedb950aa1a9ae301670dc4
+parent::/home/spencertipping/bin/object  1f1bf492b56b2f0196b2018b11b8c991
+parent::vim-highlighters                 9f43562336f10d621ddefd326a989b1d
+retriever::bin                           24b2382d3f002ee325963a5c652c53ff
+vim_highlighter::binary                  e098b0a683b32e2b23f8fc3c4a683c79
+
+__
+meta::parent('object', <<'__');
+bootstrap::html                         f44dd03cb0c904b3a5f69fbda5f018d0
+bootstrap::initialization               d22fafa2938ecb0d4728e2958b54ed3d
+bootstrap::perldoc                      5793df44bdd2526bb461272924abfd4b
+function::ad                            77a05d9a6fef7871b2c3e8e94b56870a
+function::alias                         8eeeeb4e064ef3aba7edf8f254427bc2
+function::cat                           f684de6c8776617a437b76009114f52e
+function::cc                            12ea9176e388400704d823433c209b7a
+function::ccc                           d151a9793edd83f80fb880b7f0ab9b34
+function::child                         f5764adf0b4e892f147a9b6b68d4816f
+function::clone                         bb42e04e10a8e54e88786b6fbc4fb213
+function::cp                            3fe69d1b58d90045ad520048977538c4
+function::create                        3010d55f4dfa59a998742e07823ed54d
+function::current-state                 6f03f86f1901e9ef07fdb5d4079a914c
+function::disable                       53b449708cc2ffdefa352e53bb7d847d
+function::edit                          beae8b1d7292e2ce2913199ff32f2501
+function::edit-self                     71790df00f941ed9b56e17f789b93871
+function::enable                        7de1cedc36841f5de8f9fdfbc3b65097
+function::export                        2374cd1dbf7616cb38cafba4e171075d
+function::extern                        1290a5223e2824763eecfb3a54961eff
+function::grep                          55c3cea8ff4ec2403be2a9d948e59f14
+function::hash                          6ee131d093e95b80039b4df9c7c84a02
+function::hook                          675cdb98b5dd8567bdd5a02ead6184b5
+function::hooks                         3d989899c616f7440429a2d9bf1cc44b
+function::identity                      6523885762fcc2f354fc25cf6ed126ce
+function::import                        5d0f0634cbd01274f2237717507198a2
+function::initial-state                 03d8ed608855a723124e79ca184d8e73
+function::is                            41564c8f21b12ab80824ac825266d805
+function::load-state                    b6cf278a1f351f316fa6e070359b6081
+function::lock                          5d8db258704e6a8623fac796f62fac02
+function::ls                            01a23d51d5b529e03943bd57e33f92df
+function::mv                            4a0e338a6edb89ad1e2c779d51d4d47b
+function::name                          955ba2d1fe1d67cd78651a4042283b00
+function::parents                       3da9e63b5aae9e2f5dcc946a86d166aa
+function::perl                          a0f341ea54391b63b6195e7992b6a686
+function::rd                            2adb16d7e819d2e87a27201744a581e7
+function::reload                        1589f4cf8374e0011991cb8907afca3e
+function::rm                            6f6fd7a6c25558eb469d78ea888f8551
+function::rmparent                      fc2884910a6939a47898a778f277332c
+function::save                          778c0e1043b9c6c96fb8f266f8061624
+function::save-state                    5af59ebc4ad8965767e4dc106d3b557e
+function::serialize                     a97c7391c635a93b0a710d10eb8cb3cd
+function::serialize-single              aa77af032272f5a2664e21713739a223
+function::sh                            1b2f542ca9dd63ad437058b7f6f61aac
+function::shb                           7b2685a4041c25bc495816e472bdace5
+function::shell                         a87f389b94713e5855e62241d649d01d
+function::size                          69f6ab4a100c6ef05d4d41510004d645
+function::snapshot                      56939a47f2758421669641e15ebd66eb
+function::state                         8c68044dccae28f33244d0c7e9e9acfb
+function::touch                         3991b1b7c7187566f50e5e58ce01fa06
+function::unlock                        b4aac02f7f3fb700acf4acfd9b180ceb
+function::update                        ac391dc90e507e7586c81850e7c2ecdd
+function::update-from                   631721c4dc30e11b2023a6703cbcef52
+function::usage                         5bdd370f5a56cfbf199e08d398091444
+function::verify                        0c0cc1dfeab7d705919df122f7850a4f
+indicator::cc                           3db7509c521ee6abfedd33d5f0148ed3
+indicator::locked                       fc2b4f4ca0d6a334b9ac423d06c8f18c
+indicator::path                         9ec891df17cd45895f03a6124f9d065f
+internal_function::around_hook          7cc876e7c5f78c34654337fc95255587
+internal_function::associate            55f202ffdbc6b9005e53d3e82f5f9bfe
+internal_function::attribute            dd6f010f9688977464783f60f5b6d3dd
+internal_function::attribute_is         40bda8226322505e323ea6d405388f08
+internal_function::cache                eb9da45580a9ac0882baf98acd2ecd60
+internal_function::chmod_self           2035e861eedab55ba0a9f6f5a068ca70
+internal_function::dangerous            46c4baaa214ab3d05af43e28083d5141
+internal_function::debug_trace          0faf9d9f4159d72dfe4481f6f3607ce1
+internal_function::execute              f0924e087d978ff2ab1e117124db3042
+internal_function::exported             ae35afef7d4762f2818aee5872c75be0
+internal_function::extension_for        9de8261d69cc93e9b92072b89c89befd
+internal_function::fast_hash            ee5eba48f837fda0fe472645fdd8899a
+internal_function::file::read           e647752332c8e05e81646a3ff98f9a8e
+internal_function::file::write          3e290fdcb353c6f842eb5a40f2e575f8
+internal_function::fnv_hash             c36d56f1e13a60ae427afc43ba025afc
+internal_function::hypothetically       b83e3f894a6df8623ccd370515dfd976
+internal_function::internal::main       f31f2945a19a668d92505f114ab29c78
+internal_function::invoke_editor_on     5eb976796f0ec172d6ec036116a2f41e
+internal_function::is_locked            da12ced6aa38295251f7e748ffd22925
+internal_function::namespace            784d2e96003550681a4ae02b8d6d0a27
+internal_function::parent_attributes    f6ccfaa982ab1a4d066043981aaca277
+internal_function::parent_ordering      57b6da88f76b59f3fed9abfa61280e5e
+internal_function::retrieve             721a6800f328da05047fd7392758f55d
+internal_function::retrieve_with_hooks  0f1b0220ccd973d57a2e96ff00458cf2
+internal_function::select_keys          a5e3532ec6d58151d0ee24416ea1e2b5
+internal_function::separate_options     34ec41a6edaa15adde607a0db3ccfa36
+internal_function::strip                14f490b10ebd519e829d8ae20ea4d536
+internal_function::table_display        d575f4dc873b2e0be5bd7352047fd904
+internal_function::temporary_name       6f548d101fc68356515ffd0fc9ae0c93
+internal_function::translate_backtrace  d77a56d608473b3cd8a3c6cb84185e10
+internal_function::with_exported        df345d5095d5ed13328ddd07ea922b36
+library::shell                          6b9f3befb61a01e9132a440601f8ea0a
+library::terminal                       7e2d045782405934a9614fe04bcfe559
+message_color::cc                       2218ef0f7425de5c717762ffb100eb43
+message_color::state                    03621cd6ac0b1a40d703f41e26c5807f
+message_color::states                   ac66eeeff487b5f43f88a78ea18b3d56
+meta::configure                         69c2e727c124521d074fde21f8bbc4db
+meta::externalize                       aa44e27e0bbee6f0ca4de25d603a1fc7
+meta::functor::editable                 48246c608f363de66511400e00b26164
+meta::type::alias                       889d26d2df385e9ff8e2da7de4e48374
+meta::type::bootstrap                   51108ab2ddb8d966e927c8f62d9ef3e5
+meta::type::cache                       9267171f2eace476f64a1a670eaaf2c7
+meta::type::data                        120e1649a468d3b3fd3fb783b4168499
+meta::type::function                    8ea626198861dc59dd7f303eecb5ff88
+meta::type::hook                        ff92aef328b6bdc6f87ddd0821f3e42f
+meta::type::inc                         78e0375b6725487cb1f0deca41e96bbe
+meta::type::indicator                   feb54a2624e6983617685047c717427f
+meta::type::internal_function           eff3cf31e2635f51c83836f116c99d2f
+meta::type::library                     7622e8d65e03066668bade74715d65ad
+meta::type::message_color               557a1b44979cbf77a7251fbdc4c5b82c
+meta::type::meta                        c6250056816b58a9608dd1b2614246f8
+meta::type::parent                      09d1d03379e4e0b262e06939f4e00464
+meta::type::retriever                   71a29050bf9f20f6c71afddff83addc9
+meta::type::state                       84da7d5220471307f1f990c5057d3319
+retriever::file                         3bbc9d8a887a536044bafff1d54def7e
+retriever::global                       4fe8df0cca548075169968772843a156
+retriever::id                           4da6080168d32445150cc4200af7af6e
+retriever::object                       c7633990b4e01bdc783da7e545799f4f
+retriever::perl                         f41938e6dbad317f62abffc1e4d28cca
+
+__
+meta::parent('vim-highlighters', <<'__');
+function::vim                cf9e37026f6cd1499a6dd258fbbcd060
+meta::type::vim_highlighter  27990fddb6d7bd383b55dbdfee0d148d
+parent::object               1f1bf492b56b2f0196b2018b11b8c991
+
+__
+meta::retriever('bin', <<'__');
+# Compiles a binary text file.
+my $name = $_[0];
+return undef unless $name =~ s/^bin::/binary::/ && defined retrieve($name);
+compile_binary($name);
 
 __
 meta::retriever('file', '-f $_[0] ? file::read($_[0]) : undef;');
@@ -1415,7 +1593,26 @@ exists $data{"sdoc::$attribute"} ? sdocp("sdoc::$attribute") : undef;
 __
 meta::sdoc('readme', <<'__');
 Apostrophe programming language.
-Apostrophe is a ground-level programming language designed for abstraction. I highly recommend not using it.
+Apostrophe is a ground-level programming language designed for abstraction. I highly recommend not using it. However, it is released under the MIT license despite the imminent peril it confers
+on its users.
+
+__
+meta::vim_highlighter('binary', <<'__');
+" Language: Binary text
+" Creator:  Spencer Tipping <spencer@spencertipping.com>
+" License:  MIT source code license
+
+syn case match
+
+syn match bt_line_comment       /#.*/
+syn match bt_binary_octet       /-[01]\{8\}/
+syn match bt_hex_octet          /[0-9a-f]\{2\}/
+syn match bt_repetition_prefix  -/\d\+/-
+
+hi link bt_line_comment      Comment
+hi link bt_binary_octet      Keyword
+hi link bt_hex_octet         Type
+hi link bt_repetition_prefix Preproc
 
 __
 internal::main();
