@@ -325,6 +325,7 @@ meta::cache('parent-identification', <<'__');
 /home/spencertipping/bin/object 99aeabc9ec7fe80b1b39f5e53dc7e49e
 /home/spencertipping/conjectures/perl-objects/sdoc a1e8480e579614c01dabeecf0f963bcc
 binary 93194ecf50e38f2adb6e273909e007b5
+object 99aeabc9ec7fe80b1b39f5e53dc7e49e
 vim-highlighters 902333a0bd6ed90ff919fe8477cb4e69
 __
 meta::data('author', <<'__');
@@ -567,7 +568,12 @@ meta::function('render', <<'__');
 terminal::info('rendering');
 file::write('README.md', retrieve('markdown::readme'));
 file::write("doc/$_.md", retrieve("markdown::doc/$_"), mkpath => 1) for grep s+^sdoc::doc/++,        sort keys %data;
-file::write("bin/$_", retireve("bin::$_"), mkpath => 1)             for grep s+^(sdoc::)?binary::++, sort keys %data;
+file::write("bin/$_", retrieve("bin::$_"), mkpath => 1)             for grep s+^(sdoc::)?binary::++, sort keys %data;
+
+!-f || unlink and file::write($_, retrieve($_), mkpath => 1) for grep s+^sdoc::bootstrap/+bootstrap/+, sort keys %data;
+
+terminal::info('compiling linux/64 bootstrap');
+sh('gcc -o bootstrap/linux-x64 bootstrap/linux-x64.s');
 
 __
 meta::function('rm', <<'__');
@@ -616,7 +622,7 @@ meta::function('sdoc', <<'__');
 
 my %comments_for_extension = 
   qw|c     /*,*/  cpp   //    cc   //    h    //    java //  py  #    rb   #    pl  #   pm   #         ml   (*,*)  js  //
-     hs    --     sh    #     lisp ;;;   lsp  ;;;   s    ;   scm ;;;  sc   ;;;  as  //  html <!--,-->  mli  (*,*)  cs  //
+     hs    --     sh    #     lisp ;;;   lsp  ;;;   s    #   scm ;;;  sc   ;;;  as  //  html <!--,-->  mli  (*,*)  cs  //
      vim   "      elisp ;     bas  '     ada  --    asm  ;   awk #    bc   #    boo #   tex  %         fss  (*,*)  erl %
      scala //     hx    //    io   //    j    NB.   lua  --  n   //   m    %    php //  sql  --        pov  //     pro %
      r     #      self  ","   tcl  #     texi @c    tk   #   csh #    vala //   vbs '   v    /*,*/     vhdl --     ss  ;;;
@@ -1401,7 +1407,7 @@ retriever::perl                         f41938e6dbad317f62abffc1e4d28cca
 
 __
 meta::parent('/home/spencertipping/conjectures/perl-objects/sdoc', <<'__');
-function::sdoc                           f3f3f3127961399a4c38152771c966ab
+function::sdoc                           f0cea831720d18449455a8ed79181727
 function::sdoc-html                      b23152b3f5be696e5bae842ec43fc5a4
 function::sdoc-markdown                  95b79c4f54d9f8d77e67b557cd951c7e
 function::sdocp                          c3d738d982ba87418a298ff58478a85b
@@ -1590,6 +1596,40 @@ meta::retriever('sdoc', 'exists $data{"sdoc::$_[0]"} ? sdoc("sdoc::$_[0]") : und
 meta::retriever('sdocp', <<'__');
 my $attribute = attribute($_[0]);
 exists $data{"sdoc::$attribute"} ? sdocp("sdoc::$attribute") : undef;
+__
+meta::sdoc('bootstrap/linux-x64.s', <<'__');
+Linux/x86-64 bytecode dynamic compiler | Spencer Tipping
+Licensed under the terms of the MIT source code license
+
+Introduction.
+This compiler translates Apostrophe core-level bytecode into machine instructions and gives you a way to execute them. It is implemented as a concatentative language over %rsp. The mapping
+from (debatably) human-readable ASCII bytecode to instructions is achieved by using code in a lookup table referenced by %rbp. This mapping encodes SDoc syntax by redirecting all capital
+letters to functions which detect two newlines. All input is read from file descriptor 0 (stdin).
+
+.section .rodata
+  dispatch_table_mmap_error: .string "error: could not allocate dispatch table (mmap failed)\n"
+  .size dispatch_table_mmap_error, 8
+
+  stdin_buffer_mmap_error: .string "error: could not allocate execution buffer (mmap failed)\n"
+  .size stdin_buffer_mmap_error, 8
+
+.data
+  exit_continuation: .long 0
+  .size exit_continuation, 8
+
+.text
+  .globl main
+  .type main, @function
+
+  main:
+  movq %rbp, exit_continuation
+
+  
+
+Dispatch table setup.
+The initial dispatch table is dynamically allocated using mmap and initialized from assembly code. The permissions are then changed from write to execute using mprotect, which I believe is
+necessary to overcome OS or hardware-level security measures in certain cases.
+
 __
 meta::sdoc('readme', <<'__');
 Apostrophe programming language.
