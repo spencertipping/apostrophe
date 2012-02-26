@@ -236,6 +236,7 @@ meta::configure 'vim_highlighter', extension => '.vim', inherit => 1;
 meta::define_form 'vim_highlighter', \&meta::bootstrap::implementation;
 
 __
+meta::alias('e0', 'edit sdoc::bootstrap/linux-x64.s');
 meta::bootstrap('html', <<'__');
 <html>
   <head>
@@ -557,6 +558,12 @@ meta::function('perl', <<'__');
 my $result = eval(join ' ', @_);
 $@ ? terminal::error($@) : $result;
 __
+meta::function('rcsh', <<'__');
+# Runs the given shell command and prints its return code
+my $exit_code = sh(@_);
+terminal::info("@_: $exit_code");
+
+__
 meta::function('rd', <<'__');
 if (@_) {my $pattern = join '|', @_;
          @{$transient{path}} = grep $_ !~ /^$pattern$/, @{$transient{path}}}
@@ -565,7 +572,6 @@ else    {pop @{$transient{path}}}
 __
 meta::function('reload', 'around_hook(\'reload\', sub {execute($_) for grep ! /^bootstrap::/, keys %data});');
 meta::function('render', <<'__');
-terminal::info('rendering');
 file::write('README.md', retrieve('markdown::readme'));
 file::write("doc/$_.md", retrieve("markdown::doc/$_"), mkpath => 1) for grep s+^sdoc::doc/++,        sort keys %data;
 file::write("bin/$_", retrieve("bin::$_"), mkpath => 1)             for grep s+^(sdoc::)?binary::++, sort keys %data;
@@ -823,6 +829,11 @@ my $hash = fast_hash(fast_hash(scalar @keys) . join '|', @keys);
 $hash = fast_hash("$data{$_}|$hash") for @keys;
 $hash;
 __
+meta::function('test', <<'__');
+render();
+rcsh('bootstrap/linux-x64');
+
+__
 meta::function('touch', 'associate($_, \'\') for @_;');
 meta::function('unlock', 'hook(\'unlock\', chmod_self(sub {$_[0] | 0200}));');
 meta::function('update', <<'__');
@@ -908,10 +919,6 @@ __
 meta::function('vim', <<'__');
 # Installs VIM highlighters.
 file::write("$ENV{'HOME'}/.vim/syntax/$_.vim", retrieve("vim_highlighter::$_")) for grep s/^vim_highlighter:://o, keys %data;
-__
-meta::hook('after-shell::render', <<'__');
-render();
-
 __
 meta::hook('before-shell::ad', <<'__');
 ad('sdoc::');
@@ -1613,18 +1620,16 @@ letters to functions which detect two newlines. All input is read from file desc
   stdin_buffer_mmap_error: .string "error: could not allocate execution buffer (mmap failed)\n"
   .size stdin_buffer_mmap_error, 8
 
-.data
-  exit_continuation: .long 0
-  .size exit_continuation, 8
-
 .text
   .globl main
   .type main, @function
 
   main:
-  movq %rbp, exit_continuation
+  xorq %rdi, %rdi
 
-  
+  exit:
+  movq $60, %rax
+  syscall
 
 Dispatch table setup.
 The initial dispatch table is dynamically allocated using mmap and initialized from assembly code. The permissions are then changed from write to execute using mprotect, which I believe is

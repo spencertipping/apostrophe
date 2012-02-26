@@ -13,18 +13,16 @@
   stdin_buffer_mmap_error: .string "error: could not allocate execution buffer (mmap failed)\n"
   .size stdin_buffer_mmap_error, 8
 
-.data
-  exit_continuation: .long 0
-  .size exit_continuation, 8
-
 .text
   .globl main
   .type main, @function
 
   main:
-  movq %rbp, exit_continuation
+  xorq %rdi, %rdi
 
-  
+  exit:
+  movq $60, %rax
+  syscall
 
 # Dispatch table setup.
 # The initial dispatch table is dynamically allocated using mmap and initialized from assembly code. The permissions are then changed from write to execute using mprotect, which I believe is
