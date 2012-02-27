@@ -173,7 +173,7 @@
   fill_buffer_nonzero:
   jmpq *%r12
 
-  stdin_loop:                                   # each = %r11, continuation = %r12, table = %rbp (assume it obliterates all registers)
+  stdin_loop:                                   # continuation = %r12, table = %rbp (assume it obliterates all registers)
   pushq %r12
   movq $stdin_loop_top, %r12
   jmp fill_buffer
@@ -181,6 +181,11 @@
   movq %rax, %r13                               # r13 marks buffer length
 
   stdin_loop_top:
+  movq %r15, %r14                               # see if we're at the end yet
+  andq $4095, %r14
+  testq %r14, %r13
+  ja stdin_loop_return
+
   testq %r15, %r15                              # stdin eof is indicated by %r15 being zero
   jz stdin_loop_return
 
@@ -189,12 +194,8 @@
   incq %r15
 
   movq $stdin_loop_top, %r12
-  jmp *(%rbp,%rax,8)
-
-  movq %r15, %r14                               # see if we're at the end yet
-  andq $4095, %r14
-  testq %r14, %r13
-  ja stdin_loop_return
+  movq (%rbp,%rax,8), %rax
+  jmp *%rax
 
   stdin_loop_return:
   popq %r12
