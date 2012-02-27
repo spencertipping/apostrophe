@@ -11,7 +11,10 @@
 
 .section .rodata
   mmap_error:      .ascii "error: could not allocate memory (mmap failed)\n"
-  mmap_error_size: .quad mmap_error_size - mmap_error
+  mmap_error_size: .quad . - mmap_error
+
+  mmap_alignment_error:      .ascii "error: mmap failed to align memory to a 4096-byte boundary\n"
+  mmap_alignment_error_size: .quad . - mmap_alignment_error
 
   start_sdoc_capitals: .byte 'A'
   end_sdoc_capitals:   .byte 'Z'
@@ -29,8 +32,11 @@
   jmp setup_stdin_buffer
   setup_stdin_buffer_cc:
 
-  # main function goes here (sentinel for now)
-  movq $141, %rdi
+  movq $main_cc, %r12
+  jmp stdin_loop
+
+  main_cc:
+  movq $141, %rdi                               # Sentinel exit
   jmp exit
 
   exit:
@@ -71,7 +77,7 @@
   movq mmap_error_size, %rdx
   negq %rax                                     # use errno as program return code
   movq %rax, %rdi
-  movq $exit, %r12
+  movq $exit, %r12                              # no recovery; just exit immediately
   jmp stderr
 
   allocate_ok:
@@ -110,7 +116,7 @@
 #   The dispatch table contains a bunch of jump offsets to functions defined here in assembly code.
 
     xorq %rax, %rax; movb start_sdoc_capitals, %al
-    xorq %rbx, %rbx; movb end_sdoc_capitals, %bl
+    xorq %rbx, %rbx; movb end_sdoc_capitals,   %bl
     leaq (%rbp,%rax,8), %rcx
     leaq (%rbp,%rbx,8), %rbx
     movq $read_sdoc_paragraph, %rdx
@@ -122,14 +128,18 @@
     testq %rcx, %rbx
     jb setup_dispatch_table_capital_letter_loop
 
-    # Also setup the pipe character mapping:
+    # Also setup the pipe and hash character mappings:
     xorq %rax, %rax; movb sdoc_pipe, %al
     movq %rdx, (%rbp,%rax,8)
+
+    movb comment_hash, %al
+    movq $hash_character, (%rbp,%rax,8)
 
   jmp setup_dispatch_table_cc
 
 # Standard input reader.
-# There are two steps here. First, allocate a buffer using mmap; second, read stuff into that buffer using the read syscall.
+# There are two steps here. First, allocate a buffer using mmap; second, read stuff into that buffer using the read syscall. The stdin buffer address is circular and the current offset is stored
+# in %r15. It is aligned to a 4096-byte boundary, so %r15 & ~4095 gives you the base address of the allocation.
 
   setup_stdin_buffer:
   movq $4096, %rsi
@@ -137,7 +147,58 @@
   jmp allocate
 
   setup_stdin_buffer_ok:
-  jmp setup_stdin_buffer_cc
+  movq %rax, %r15
+  andq $0xfffffffffffff000, %rax                # Check memory alignment
+  cmpq %rax, %r15
+  je setup_stdin_buffer_cc
+
+  movq $mmap_alignment_error, %rsi              # Alignment error; use modulus as exit code
+  movq mmap_alignment_error_size, %rdx
+  andq $4095, %r15
+  movq %r15, %rdi
+  movq $exit, %r12
+  jmp stderr
+
+  fill_buffer:                                  # continuation = %r12 -> bytes = %rax
+  xorq %rax, %rax                               # syscall = read
+  xorq %rdi, %rdi                               # fd      = 0 (stdin)
+  movq %r15, %rdx                               # buf     = %r15 (stdin buffer)
+  movq $4096, %r10                              # length  = 4096 (stdin buffer size)
+  syscall
+
+  testq %rax, %rax                              # If no data, set %r15 to zero. Any reads will then segfault.
+  jnz fill_buffer_nonzero
+  xorq %r15, %r15
+
+  fill_buffer_nonzero:
+  jmpq *%r12
+
+  stdin_loop:                                   # each = %r11, continuation = %r12, table = %rbp (assume it obliterates all registers)
+  pushq %r12
+  movq $stdin_loop_top, %r12
+  jmp fill_buffer
+
+  movq %rax, %r13                               # r13 marks buffer length
+
+  stdin_loop_top:
+  testq %r15, %r15                              # stdin eof is indicated by %r15 being zero
+  jz stdin_loop_return
+
+  xorq %rax, %rax                               # zero out %rax just in case...
+  movb (%r15), %al                              # load the next byte
+  incq %r15
+
+  movq $stdin_loop_top, %r12
+  jmp *(%rbp,%rax,8)
+
+  movq %r15, %r14                               # see if we're at the end yet
+  andq $4095, %r14
+  testq %r14, %r13
+  ja stdin_loop_return
+
+  stdin_loop_return:
+  popq %r12
+  jmp *%r12
 
 # SDoc reader.
 # Munch stuff, storing state by jumping instead of by using registers.
@@ -146,7 +207,8 @@
   jmp *%r12                                     # Immediately invoke continuation
 
   hash_character:
-
+  movq $7, %rdi
+  jmp exit
 
   read_sdoc_paragraph:
   movq $3, %rdi                                 # Sentinel return
