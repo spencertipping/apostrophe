@@ -1627,204 +1627,335 @@ interpretation.
   mmap_alignment_error:      .ascii "error: mmap failed to align memory to a 4096-byte boundary\n"
   mmap_alignment_error_size: .quad . - mmap_alignment_error
 
+  buffer_fill_error:      .ascii "error: failed to fill input buffer\n"
+  buffer_fill_error_size: .quad . - buffer_fill_error
+
   start_sdoc_capitals: .byte 'A'
   end_sdoc_capitals:   .byte 'Z'
   sdoc_pipe:           .byte '|'
   comment_hash:        .byte '#'
   newline:             .byte '\n'
 
+.section .data
+  main_dispatch_table:         .quad 0
+  sdoc_dispatch_table:         .quad 0
+  sdoc_newline_dispatch_table: .quad 0
+  line_comment_dispatch_table: .quad 0
+
+  dispatch_table_stack:        .quad 0
+
+  stdin_buffer:                .quad 0
+  stdin_buffer_limit:          .quad 0
+
 .text
   .globl _start
   .type _start, @function
 
-  _start:
-  jmp setup_dispatch_table
-  setup_dispatch_table_cc:
-  jmp setup_stdin_buffer
-  setup_stdin_buffer_cc:
+Toplevel entry point.
+Create the stdin buffer and dispatch table, then jump into the reader.
 
-  movq $main_cc, %r12
+  _start:
+  jmp setup_dispatch_tables
+  setup_dispatch_tables_cc:
+
+  # Install the initial dispatch table.
+  movq main_dispatch_table, %rbp
+
+  movq $exit_successfully, %r12
   jmp stdin_loop
 
-  main_cc:
-  movq $141, %rdi                               # Sentinel exit
-  jmp exit
+Toplevel functions.
+These are called from various places and use %r12 as a return address.
 
-  exit:
-  movq $60, %rax
-  syscall
+  Exit-successfully function.
+  Called after the reader completes (i.e. reaches eof).
 
-  stderr:                                       # buf = %rsi, length = %rdx, continuation = %r12 -> result = %rax
-  pushq %rdi
-  movq $1, %rax                                 # syscall = write
-  movq $2, %rdi                                 # fd      = 2 (stderr)
-  syscall
-  popq %rdi
-  jmp *%r12
+    exit_successfully:
+    xorq %rdi, %rdi
+    jmp exit
 
-  allocate:                                     # size = %rsi, continuation = %r12 -> result = %rax (fails on error)
-  pushq %rdi
-  pushq %rdx
-  pushq %r10
-  pushq %r8
-  pushq %r9
-  movq $9, %rax                                 # syscall = mmap
-  xorq %rdi, %rdi                               # *addr   = NULL
+  Exit function.
+  Takes the exit code as %rdi and dies immediately.
+
+    exit:
+    movq $60, %rax
+    syscall
+
+  Stderr logger.
+  Takes the message to log as %rsi, the length of the message as %rdx, and the continuation as %r12. %rdi is preserved.
+
+    stderr:                                     # buf = %rsi, length = %rdx, continuation = %r12 -> result = %rax
+    pushq %rdi
+    movq $1, %rax                               # syscall = write
+    movq $2, %rdi                               # fd      = 2 (stderr)
+    syscall
+    movq $74, %rax                              # syscall = fsync
+    syscall
+    popq %rdi
+    jmp *%r12
+
+  Memory allocator.
+  Uses mmap() to allocate a chunk of memory. The size is passed in as %rsi and the continuation is %r12. As per syscall convention, the newly allocated memory is returned as %rax. This
+  function won't return an error value; instead, it will simply kill the process with a nonzero error code.
+
+    allocate:                                   # size = %rsi, continuation = %r12 -> result = %rax (exits on error)
+    pushq %rdi
+    pushq %rdx
+    pushq %r10
+    pushq %r8
+    pushq %r9
+    movq $9, %rax                               # syscall = mmap
+    xorq %rdi, %rdi                             # *addr   = NULL
                                                 # length  = %rsi
-  movq $3, %rdx                                 # prot    = PROT_READ | PROT_WRITE
-  movq $34, %r10                                # flags   = MAP_PRIVATE | MAP_ANONYMOUS
-  movq $-1, %r8                                 # fd      = -1
-  xorq %r9, %r9                                 # offset  = 0
-  syscall
-  popq %r9
-  popq %r8
-  popq %r10
-  popq %rdx
+    movq $3, %rdx                               # prot    = PROT_READ | PROT_WRITE
+    movq $34, %r10                              # flags   = MAP_PRIVATE | MAP_ANONYMOUS
+    movq $-1, %r8                               # fd      = -1
+    xorq %r9, %r9                               # offset  = 0
+    syscall
+    popq %r9
+    popq %r8
+    popq %r10
+    popq %rdx
 
-  testq %rax, %rax                              # negative return values from mmap() indicate failure
-  jns allocate_ok
+    testq %rax, %rax                            # negative return values from mmap() indicate failure
+    jns allocate_ok
 
-  movq $mmap_error, %rsi
-  movq mmap_error_size, %rdx
-  negq %rax                                     # use errno as program return code
-  movq %rax, %rdi
-  movq $exit, %r12                              # no recovery; just exit immediately
-  jmp stderr
+    movq $mmap_error, %rsi
+    movq mmap_error_size, %rdx
+    negq %rax                                   # use errno as program return code
+    movq %rax, %rdi
+    movq $exit, %r12                            # no recovery; just exit immediately
+    jmp stderr
 
-  allocate_ok:
-  popq %rdi
-  jmp *%r12
+    allocate_ok:
+    popq %rdi
+    jmp *%r12
+
+  Dispatch table initialization.
+  This sets up a dispatch table whose address is specified in %rbp. It just sets up every entry to point to the nop function and then jumps to the continuation in %r12.
+
+    initialize_dispatch_table_with_nops:
+    pushq %rdx
+    pushq %rbx
+    movq %rbp, %rbx
+    addq $2048, %rbx
+    movq $nop_character, %rdx
+
+    initialize_dispatch_table_with_nops_loop:
+    movq %rdx, (%rax)
+
+    addq $8, %rax
+    cmpq %rax, %rbx
+    jae initialize_dispatch_table_with_nops_loop
+    popq %rbx
+    popq %rdx
+    jmp *%r12
+
+Reader functions.
+These govern the program's execution post-initialization.
+
+  Static link points.
+  These functions are referenced from dispatch tables.
+
+    nop_character:
+    movq $7, %rdi
+    jmp exit
+    jmp *%r12                                     # Immediately invoke continuation
+
+    sdoc_advance_to_second_state:
+    movq sdoc_newline_dispatch_table, %rbp
+    jmp *%r12
+
+    sdoc_restore_first_sdoc_table:
+    movq sdoc_dispatch_table, %rbp
+    jmp *%r12
+
+    sdoc_start_paragraph:
+    movq %rbp, (dispatch_table_stack)
+    subq $8, dispatch_table_stack
+    movq sdoc_dispatch_table, %rbp
+    movq $3, %rdi
+    jmp exit
+
+    pop_table:
+    movq (dispatch_table_stack), %rbp
+    addq $8, dispatch_table_stack
+    jmp *%r12
+
+    start_line_comment:
+    movq %rbp, (dispatch_table_stack)
+    subq $8, dispatch_table_stack
+    movq line_comment_dispatch_table, %rbp
+    movq $7, %rdi
+    jmp exit
+
+  Standard input reader.
+  There are two steps here. First, allocate a buffer using mmap; second, read stuff into that buffer using the read syscall. The stdin buffer address is circular and the current offset is
+  stored in %r15. It is aligned to a 4096-byte boundary, so %r15 & ~4095 gives you the base address of the allocation.
+
+    stdin_loop:                                 # continuation = %r12, table = %rbp (returns after stdin eof)
+    pushq %r12
+
+    movq $4096, %rsi
+    movq $stdin_loop_buffer_cc, %r12
+    jmp allocate
+    stdin_loop_buffer_cc:
+    movq %rax, stdin_buffer
+
+    movq $stdin_loop_init, %r12
+    jmp fill_buffer
+
+    movq $mmap_alignment_error, %rsi            # Alignment error; use modulus as exit code
+    movq mmap_alignment_error_size, %rdx
+    andq $4095, stdin_buffer
+    movq stdin_buffer, %rdi
+    movq $exit, %r12
+    jmp stderr
+
+    fill_buffer:                                # continuation = %r12 -> bytes = %rax (resets %r15)
+    andq $0xfffffffffffff000, stdin_buffer      # realign %r15 to next-lowest 4096-byte boundary
+    xorq %rax, %rax                             # syscall = read
+    xorq %rdi, %rdi                             # fd      = 0 (stdin)
+    movq stdin_buffer, %rsi                     # buf     = %r15 (stdin buffer)
+    movq $4096, %rdx                            # length  = 4096 (stdin buffer size)
+    syscall
+    testq %rax, %rax                            # If no data, set stdin_buffer to zero. Any erroneous reads against it will then segfault.
+    js  fill_buffer_error
+    jnz fill_buffer_cc
+    xorq %rax, %rax
+    movq %rax, stdin_buffer
+
+    fill_buffer_cc:
+    jmp *%r12
+
+    fill_buffer_error:
+    negq %rax
+    movq %rax, %rdi
+    movq $buffer_fill_error, %rsi
+    movq buffer_fill_error_size, %rdx
+    movq $exit, %r12
+    jmp stderr
+
+    stdin_loop_init:
+    movq %rax, stdin_buffer_limit
+    movq stdin_buffer, %rax
+    addq %rax, stdin_buffer_limit
+
+    stdin_loop_top:
+    movq stdin_buffer, %rax
+    testq %rax, %rax                            # stdin eof is indicated by stdin_buffer (%rax) being 0
+    jz stdin_loop_return
+    cmpq %rax, stdin_buffer_limit               # see if we're at or past the end of the buffer...
+    jbe fill_buffer                             # ... and if we are, fill the buffer and return to the loop top
+
+    movq %rax, stdin_buffer
+
+    xorq %rax, %rax                             # zero out %rax just in case...
+    movb (stdin_buffer), %al                    # load the next byte
+    incq stdin_buffer
+    movq $stdin_loop_top, %r12
+    movq (%rbp,%rax,8), %rax
+
+    jmp *%rax                                   # tail call, so we wouldn't be able to restore registers after this
+
+    stdin_loop_return:
+    popq %r12
+    jmp *%r12
 
 Dispatch table setup.
 The initial dispatch table is dynamically allocated using mmap and initialized from assembly code. Letters from A-Z and | are set up to consume input until a \n\n is reached. This allows you
-to write SDoc into the bytecode. The dispatch table is addressed using %rbp and is scaled by 8 bytes (2048 bytes per table).
+to write SDoc into the bytecode.
 
-  setup_dispatch_table:
+  setup_dispatch_tables:
+
+  # Allocate the table stack.
   movq $4096, %rsi
-  movq $setup_dispatch_table_mmap_ok, %r12
+  movq $setup_dispatch_stacks_allocated, %r12
   jmp allocate
+    setup_dispatch_stacks_allocated:
+    movq %rax, dispatch_table_stack
 
-  setup_dispatch_table_mmap_ok:
-  movq %rax, %rbp
+  movq $16384, %rsi                             # enough space for 8 dispatch tables
+  movq $setup_dispatch_tables_allocated, %r12
+  jmp allocate
+    setup_dispatch_tables_allocated:
+    movq %rax, %rbp
 
-  Initializing the table.
-  Clear out the whole thing up front. By default, every character is a nop.
-
-    leaq (%rbp), %rcx
-    movq %rcx, %rbx
-    addq $2048, %rbx
-
-    movq $nop_character, %rdx
-
-    setup_dispatch_table_clear_loop:
-      movq %rdx, (%rcx)
-
-    addq $8, %rcx
-    testq %rcx, %rbx
-    jb setup_dispatch_table_clear_loop
-
-  Writing dispatch instructions.
+  Main dispatch instructions.
   The dispatch table contains a bunch of jump offsets to functions defined here in assembly code.
 
-    xorq %rax, %rax; movb start_sdoc_capitals, %al
-    xorq %rbx, %rbx; movb end_sdoc_capitals,   %bl
-    leaq (%rbp,%rax,8), %rcx
-    leaq (%rbp,%rbx,8), %rbx
-    movq $read_sdoc_paragraph, %rdx
+    movq $customize_main_dispatch_table, %r12
+    jmp initialize_dispatch_table_with_nops
+
+    customize_main_dispatch_table:
+    xorq %rcx, %rcx; movb start_sdoc_capitals, %cl; leaq (%rbp,%rcx,8), %rcx
+    xorq %rbx, %rbx; movb end_sdoc_capitals,   %bl; leaq (%rbp,%rbx,8), %rbx
+    movq $sdoc_start_paragraph, %rdx
 
     setup_dispatch_table_capital_letter_loop:
-      movq %rdx, (%rcx)
+    movq %rdx, (%rcx)
 
     addq $8, %rcx
-    testq %rcx, %rbx
-    jb setup_dispatch_table_capital_letter_loop
+    cmpq %rcx, %rbx
+    jae setup_dispatch_table_capital_letter_loop
 
     # Also setup the pipe and hash character mappings:
-    xorq %rax, %rax; movb sdoc_pipe, %al
-    movq %rdx, (%rbp,%rax,8)
+    xorq %rcx, %rcx; movb sdoc_pipe, %cl
+    movq %rdx, (%rbp,%rcx,8)
 
-    movb comment_hash, %al
-    movq $hash_character, (%rbp,%rax,8)
+    movb comment_hash, %cl
+    movq $start_line_comment, (%rbp,%rcx,8)
 
-  jmp setup_dispatch_table_cc
+    # Save the dispatch table for later use
+    movq %rbp, main_dispatch_table
 
-Standard input reader.
-There are two steps here. First, allocate a buffer using mmap; second, read stuff into that buffer using the read syscall. The stdin buffer address is circular and the current offset is stored
-in %r15. It is aligned to a 4096-byte boundary, so %r15 & ~4095 gives you the base address of the allocation.
+  SDoc dispatch instructions.
+  This is the second dispatch table and is activated when parsing an SDoc paragraph. It serves only to activate the second SDoc dispatch table; this one is used to handle the second
+  consecutive newline.
 
-  setup_stdin_buffer:
-  movq $4096, %rsi
-  movq $setup_stdin_buffer_ok, %r12
-  jmp allocate
+    addq $2048, %rbp
+    movq $customize_sdoc_dispatch_table, %r12
+    jmp initialize_dispatch_table_with_nops
 
-  setup_stdin_buffer_ok:
-  movq %rax, %r15
-  andq $0xfffffffffffff000, %rax                # Check memory alignment
-  cmpq %rax, %r15
-  je setup_stdin_buffer_cc
+    customize_sdoc_dispatch_table:
+    xorq %rcx, %rcx
+    movb newline, %cl
+    movq $sdoc_advance_to_second_state, (%rbp,%rcx,8)
 
-  movq $mmap_alignment_error, %rsi              # Alignment error; use modulus as exit code
-  movq mmap_alignment_error_size, %rdx
-  andq $4095, %r15
-  movq %r15, %rdi
-  movq $exit, %r12
-  jmp stderr
+    movq %rbp, sdoc_dispatch_table
 
-  fill_buffer:                                  # continuation = %r12 -> bytes = %rax
-  xorq %rax, %rax                               # syscall = read
-  xorq %rdi, %rdi                               # fd      = 0 (stdin)
-  movq %r15, %rdx                               # buf     = %r15 (stdin buffer)
-  movq $4096, %r10                              # length  = 4096 (stdin buffer size)
-  syscall
+    # Second table (maps the second newline to a function that restores the main dispatch table; everything else goes to a function that reverts to the first SDoc table)
+    addq $2048, %rbp
+    xorq %rcx, %rcx
 
-  testq %rax, %rax                              # If no data, set %r15 to zero. Any reads will then segfault.
-  jnz fill_buffer_nonzero
-  xorq %r15, %r15
+    movq $pop_table, %rbx
+    customize_sdoc_newline_dispatch_table_loop:
+    movq $sdoc_restore_first_sdoc_table, %rdx
+    cmpb newline, %cl
+    cmove %rbx, %rdx
+    movq %rdx, (%rbp,%rcx,8)
 
-  fill_buffer_nonzero:
-  jmpq *%r12
+    incq %rcx
+    testq $255, %rcx
+    jnz customize_sdoc_newline_dispatch_table_loop
 
-  stdin_loop:                                   # continuation = %r12, table = %rbp (assume it obliterates all registers)
-  pushq %r12
-  movq $stdin_loop_top, %r12
-  jmp fill_buffer
+    movq %rbp, sdoc_newline_dispatch_table
 
-  movq %rax, %r13                               # r13 marks buffer length
+  Line comment dispatch table.
+  This is the same idea as the second SDoc table but simpler: everything is a nop except for a newline, which restores the previous table.
 
-  stdin_loop_top:
-  movq %r15, %r14                               # see if we're at the end yet
-  andq $4095, %r14
-  testq %r14, %r13
-  ja stdin_loop_return
+    addq $2048, %rbp
+    movq $customize_line_comment_table, %r12
+    jmp initialize_dispatch_table_with_nops
 
-  testq %r15, %r15                              # stdin eof is indicated by %r15 being zero
-  jz stdin_loop_return
+    customize_line_comment_table:
+    xorq %rcx, %rcx
+    movb newline, %cl
+    movq $pop_table, (%rbp,%rcx,8)
 
-  xorq %rax, %rax                               # zero out %rax just in case...
-  movb (%r15), %al                              # load the next byte
-  incq %r15
+    movq %rbp, line_comment_dispatch_table
 
-  movq $stdin_loop_top, %r12
-  movq (%rbp,%rax,8), %rax
-  jmp *%rax
-
-  stdin_loop_return:
-  popq %r12
-  jmp *%r12
-
-SDoc reader.
-Munch stuff, storing state by jumping instead of by using registers.
-
-  nop_character:
-  jmp *%r12                                     # Immediately invoke continuation
-
-  hash_character:
-  movq $7, %rdi
-  jmp exit
-
-  read_sdoc_paragraph:
-  movq $3, %rdi                                 # Sentinel return
-  jmp exit
+  jmp setup_dispatch_tables_cc
 
 __
 meta::sdoc('readme', <<'__');
